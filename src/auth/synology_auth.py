@@ -1,16 +1,24 @@
 # src/synology_auth.py - Simple Synology authentication utilities
 
 import requests
+import urllib3
 from typing import Dict, Any, Optional
+
+# Suppress SSL warnings for self-signed certificates
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# Connection timeout in seconds (connect timeout, read timeout)
+DEFAULT_TIMEOUT = (5, 10)
 
 
 class SynologyAuth:
     """Handles Synology NAS authentication using simple API calls."""
-    
-    def __init__(self, base_url: str):
+
+    def __init__(self, base_url: str, timeout: tuple = DEFAULT_TIMEOUT):
         self.base_url = base_url.rstrip('/')
         self.current_session_id: Optional[str] = None
         self.current_session_type: str = 'FileStation'
+        self.timeout = timeout
     
     def login(self, username: str, password: str) -> Dict[str, Any]:
         """Authenticate with Synology NAS and return session info."""
@@ -35,7 +43,7 @@ class SynologyAuth:
             }
             
             try:
-                response = requests.get(login_url, params=payload, verify=False)
+                response = requests.get(login_url, params=payload, verify=False, timeout=self.timeout)
                 response.raise_for_status()
                 result = response.json()
                 
@@ -96,10 +104,10 @@ class SynologyAuth:
             }
             
             try:
-                response = requests.get(logout_url, params=payload, verify=False)
+                response = requests.get(logout_url, params=payload, verify=False, timeout=self.timeout)
                 response.raise_for_status()
                 result = response.json()
-                
+
                 if result.get('success'):
                     # Clear current session if we logged out our own session
                     if logout_session_id == self.current_session_id:
@@ -112,7 +120,7 @@ class SynologyAuth:
                     # For certain errors, don't try other versions
                     if error_code in [105, 106]:  # Invalid session or not logged in
                         break
-                        
+
             except requests.RequestException as e:
                 last_error = {
                     'success': False, 
