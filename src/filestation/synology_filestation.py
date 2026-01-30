@@ -8,6 +8,7 @@ import tempfile
 import json
 import unicodedata
 import urllib3
+import base64
 
 # Suppress SSL warnings for self-signed certificates
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -528,11 +529,10 @@ class SynologyFileStation:
                 pass  # Ignore cleanup errors
             raise e
     
-    def get_file_content(self, path: str) -> str:
-        """Get the content of a file."""
+    def _download_file(self, path: str) -> requests.Response:
+        """Download a file and return the raw response."""
         formatted_path = self._format_path(path)
-        
-        # Use the download API to get file content
+
         response = requests.get(
             f"{self.base_url}/webapi/entry.cgi",
             params={
@@ -546,17 +546,270 @@ class SynologyFileStation:
             stream=True
         )
         response.raise_for_status()
-        
-        # Check for API error in the headers (download API is special)
+
+        # Check for API error (download API returns JSON on error)
         if 'Content-Type' in response.headers and 'application/json' in response.headers['Content-Type']:
             error_data = response.json()
             if not error_data.get('success'):
                 error_code = error_data.get('error', {}).get('code', 'unknown')
                 raise Exception(f"Synology API error: {error_code}")
 
-        # Assuming the content is text, read it
-        # For binary files, this would need to be handled differently
+        return response
+
+    def get_file_content(self, path: str, mode: str = "text") -> str:
+        """Get the content of a file.
+
+        Args:
+            path: File path on the NAS
+            mode: "text" for UTF-8 text, "binary" for base64-encoded content
+
+        Returns:
+            File content as text string or base64-encoded string
+        """
+        response = self._download_file(path)
+
+        if mode == "binary":
+            return base64.b64encode(response.content).decode('ascii')
         return response.text
+
+    def write_file(self, path: str, content: str, create_parents: bool = True) -> Dict[str, Any]:
+        """Write content to a file, creating or overwriting it.
+
+        This is the primary method for updating existing files or creating new ones.
+
+        Args:
+            path: Full path on the NAS (must start with /)
+            content: Text content to write
+            create_parents: Create parent directories if they don't exist
+
+        Returns:
+            Dict with operation result
+        """
+        formatted_path = self._format_path(path)
+
+        if not formatted_path or formatted_path == '/':
+            raise Exception("Invalid file path")
+
+        directory = os.path.dirname(formatted_path)
+        filename = os.path.basename(formatted_path)
+
+        if not filename:
+            raise Exception("Invalid filename")
+
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, encoding='utf-8') as temp_file:
+            temp_file.write(content)
+            temp_file_path = temp_file.name
+
+        try:
+            session = requests.session()
+
+            with open(temp_file_path, 'rb') as payload:
+                url = f"{self.api_url}?api=SYNO.FileStation.Upload&version=2&method=upload&_sid={self.session_id}"
+
+                files = {
+                    'file': (filename, payload, 'application/octet-stream')
+                }
+
+                data = {
+                    'path': directory,
+                    'create_parents': str(create_parents).lower(),
+                    'overwrite': 'true'
+                }
+
+                response = session.post(url, files=files, data=data, verify=self.verify_ssl)
+                response.raise_for_status()
+
+                result = response.json()
+
+                if not result.get('success'):
+                    error_code = result.get('error', {}).get('code', 'unknown')
+                    raise Exception(f"Upload failed with error: {error_code}")
+
+            session.close()
+
+            return {
+                'success': True,
+                'path': formatted_path,
+                'filename': filename,
+                'directory': directory,
+                'size': len(content.encode('utf-8')),
+                'message': f"Successfully wrote '{filename}' at '{directory}'"
+            }
+
+        finally:
+            try:
+                os.unlink(temp_file_path)
+            except Exception:
+                pass
+
+    def append_file(self, path: str, content: str) -> Dict[str, Any]:
+        """Append content to an existing file.
+
+        Reads the existing file, appends the new content, and writes it back.
+
+        Args:
+            path: Full path to the file on the NAS
+            content: Content to append
+
+        Returns:
+            Dict with operation result
+        """
+        try:
+            existing_content = self.get_file_content(path, mode="text")
+        except Exception:
+            existing_content = ""
+
+        new_content = existing_content + content
+        result = self.write_file(path, new_content)
+        result['message'] = f"Successfully appended to '{os.path.basename(path)}'"
+        result['appended_size'] = len(content.encode('utf-8'))
+        result['total_size'] = len(new_content.encode('utf-8'))
+        return result
+
+    def copy_file(self, source_path: str, destination_path: str, overwrite: bool = False) -> Dict[str, Any]:
+        """Copy a file or directory to a new location.
+
+        Args:
+            source_path: Full path to the file/directory to copy
+            destination_path: Destination directory path
+            overwrite: Whether to overwrite existing files at destination
+
+        Returns:
+            Dict with operation result
+        """
+        formatted_source = self._format_path(source_path)
+        formatted_dest = self._format_path(destination_path)
+
+        if not formatted_source or formatted_source == '/':
+            raise Exception("Invalid source path")
+
+        if not formatted_dest or formatted_dest == '/':
+            raise Exception("Invalid destination path")
+
+        # Start the copy operation (remove_src=False makes it copy, not move)
+        start_data = self._make_request(
+            'SYNO.FileStation.CopyMove', '3', 'start',
+            path=formatted_source,
+            dest_folder_path=formatted_dest,
+            overwrite=overwrite,
+            remove_src=False
+        )
+
+        task_id = start_data.get('taskid')
+        if not task_id:
+            raise Exception("Failed to start copy task")
+
+        try:
+            import time
+            max_wait_time = 120
+            wait_time = 0
+
+            while wait_time < max_wait_time:
+                status_data = self._make_request(
+                    'SYNO.FileStation.CopyMove', '3', 'status',
+                    taskid=task_id
+                )
+
+                if status_data.get('finished'):
+                    if 'error' in status_data:
+                        error_info = status_data['error']
+                        raise Exception(f"Copy failed: {error_info}")
+
+                    source_name = os.path.basename(formatted_source)
+                    final_dest = os.path.join(formatted_dest, source_name).replace('\\', '/')
+
+                    return {
+                        'success': True,
+                        'source_path': formatted_source,
+                        'destination_path': final_dest,
+                        'task_id': task_id,
+                        'message': f"Successfully copied '{formatted_source}' to '{final_dest}'"
+                    }
+
+                time.sleep(0.5)
+                wait_time += 0.5
+
+            raise Exception(f"Copy operation timed out after {max_wait_time} seconds")
+
+        except Exception as e:
+            try:
+                self._make_request(
+                    'SYNO.FileStation.CopyMove', '3', 'stop',
+                    taskid=task_id
+                )
+            except Exception:
+                pass
+            raise e
+
+    def upload_binary(self, path: str, content_b64: str, create_parents: bool = True) -> Dict[str, Any]:
+        """Upload binary content (base64-encoded) to a file.
+
+        Args:
+            path: Full path on the NAS
+            content_b64: Base64-encoded file content
+            create_parents: Create parent directories if they don't exist
+
+        Returns:
+            Dict with operation result
+        """
+        formatted_path = self._format_path(path)
+
+        if not formatted_path or formatted_path == '/':
+            raise Exception("Invalid file path")
+
+        directory = os.path.dirname(formatted_path)
+        filename = os.path.basename(formatted_path)
+
+        if not filename:
+            raise Exception("Invalid filename")
+
+        binary_content = base64.b64decode(content_b64)
+
+        with tempfile.NamedTemporaryFile(mode='wb', delete=False) as temp_file:
+            temp_file.write(binary_content)
+            temp_file_path = temp_file.name
+
+        try:
+            session = requests.session()
+
+            with open(temp_file_path, 'rb') as payload:
+                url = f"{self.api_url}?api=SYNO.FileStation.Upload&version=2&method=upload&_sid={self.session_id}"
+
+                files = {
+                    'file': (filename, payload, 'application/octet-stream')
+                }
+
+                data = {
+                    'path': directory,
+                    'create_parents': str(create_parents).lower(),
+                    'overwrite': 'true'
+                }
+
+                response = session.post(url, files=files, data=data, verify=self.verify_ssl)
+                response.raise_for_status()
+
+                result = response.json()
+
+                if not result.get('success'):
+                    error_code = result.get('error', {}).get('code', 'unknown')
+                    raise Exception(f"Upload failed with error: {error_code}")
+
+            session.close()
+
+            return {
+                'success': True,
+                'path': formatted_path,
+                'filename': filename,
+                'directory': directory,
+                'size': len(binary_content),
+                'message': f"Successfully uploaded binary file '{filename}' at '{directory}'"
+            }
+
+        finally:
+            try:
+                os.unlink(temp_file_path)
+            except Exception:
+                pass
 
     def move_file(self, source_path: str, destination_path: str, overwrite: bool = False) -> Dict[str, Any]:
         """Move a file or directory to a new location.

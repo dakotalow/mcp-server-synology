@@ -269,6 +269,14 @@ class SynologyMCPServer:
                     return await self._handle_search_files(arguments)
                 elif name == "get_file_content":
                     return await self._handle_get_file_content(arguments)
+                elif name == "write_file":
+                    return await self._handle_write_file(arguments)
+                elif name == "append_file":
+                    return await self._handle_append_file(arguments)
+                elif name == "copy_file":
+                    return await self._handle_copy_file(arguments)
+                elif name == "upload_binary":
+                    return await self._handle_upload_binary(arguments)
                 elif name == "rename_file":
                     return await self._handle_rename_file(arguments)
                 elif name == "move_file":
@@ -659,15 +667,80 @@ class SynologyMCPServer:
         """Handle getting file content."""
         base_url = self._get_base_url(arguments)
         path = arguments["path"]
-        
+        mode = arguments.get("mode", "text")
+
         filestation = self._get_filestation(base_url)
-        content = filestation.get_file_content(path)
-        
+        content = filestation.get_file_content(path, mode=mode)
+
+        if mode == "binary":
+            return [types.TextContent(
+                type="text",
+                text=f"Base64-encoded content of {path}:\n{content}"
+            )]
         return [types.TextContent(
             type="text",
             text=content
         )]
-    
+
+    async def _handle_write_file(self, arguments: dict) -> list[types.TextContent]:
+        """Handle writing/updating file content."""
+        base_url = self._get_base_url(arguments)
+        path = arguments["path"]
+        content = arguments["content"]
+        create_parents = arguments.get("create_parents", True)
+
+        filestation = self._get_filestation(base_url)
+        result = filestation.write_file(path, content, create_parents)
+
+        return [types.TextContent(
+            type="text",
+            text=f"Write result: {json.dumps(result, indent=2)}"
+        )]
+
+    async def _handle_append_file(self, arguments: dict) -> list[types.TextContent]:
+        """Handle appending content to a file."""
+        base_url = self._get_base_url(arguments)
+        path = arguments["path"]
+        content = arguments["content"]
+
+        filestation = self._get_filestation(base_url)
+        result = filestation.append_file(path, content)
+
+        return [types.TextContent(
+            type="text",
+            text=f"Append result: {json.dumps(result, indent=2)}"
+        )]
+
+    async def _handle_copy_file(self, arguments: dict) -> list[types.TextContent]:
+        """Handle copying a file or directory."""
+        base_url = self._get_base_url(arguments)
+        source_path = arguments["source_path"]
+        destination_path = arguments["destination_path"]
+        overwrite = arguments.get("overwrite", False)
+
+        filestation = self._get_filestation(base_url)
+        result = filestation.copy_file(source_path, destination_path, overwrite)
+
+        return [types.TextContent(
+            type="text",
+            text=f"Copy result: {json.dumps(result, indent=2)}"
+        )]
+
+    async def _handle_upload_binary(self, arguments: dict) -> list[types.TextContent]:
+        """Handle uploading binary content to a file."""
+        base_url = self._get_base_url(arguments)
+        path = arguments["path"]
+        content_b64 = arguments["content_b64"]
+        create_parents = arguments.get("create_parents", True)
+
+        filestation = self._get_filestation(base_url)
+        result = filestation.upload_binary(path, content_b64, create_parents)
+
+        return [types.TextContent(
+            type="text",
+            text=f"Upload result: {json.dumps(result, indent=2)}"
+        )]
+
     async def _handle_rename_file(self, arguments: dict) -> list[types.TextContent]:
         """Handle renaming a file or directory."""
         base_url = self._get_base_url(arguments)
@@ -1483,7 +1556,7 @@ class SynologyMCPServer:
             ),
             types.Tool(
                 name="get_file_content",
-                description="Get the content of a file",
+                description="Read the content of a file from the Synology NAS. Supports text and binary modes.",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -1494,9 +1567,114 @@ class SynologyMCPServer:
                         "path": {
                             "type": "string",
                             "description": "File path (must start with /)"
+                        },
+                        "mode": {
+                            "type": "string",
+                            "enum": ["text", "binary"],
+                            "description": "Read mode: 'text' for UTF-8 text files (default), 'binary' for base64-encoded binary content"
                         }
                     },
                     "required": ["path"]
+                }
+            ),
+            types.Tool(
+                name="write_file",
+                description="Write content to a file on the Synology NAS, creating or overwriting it. Use this to update existing files or create new ones.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "base_url": {
+                            "type": "string",
+                            "description": "Synology NAS base URL (optional if configured in .env)"
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "Full file path (must start with /)"
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "Text content to write to the file"
+                        },
+                        "create_parents": {
+                            "type": "boolean",
+                            "description": "Create parent directories if they don't exist (default: true)"
+                        }
+                    },
+                    "required": ["path", "content"]
+                }
+            ),
+            types.Tool(
+                name="append_file",
+                description="Append content to an existing file on the Synology NAS. Creates the file if it doesn't exist.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "base_url": {
+                            "type": "string",
+                            "description": "Synology NAS base URL (optional if configured in .env)"
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "Full file path (must start with /)"
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "Content to append to the file"
+                        }
+                    },
+                    "required": ["path", "content"]
+                }
+            ),
+            types.Tool(
+                name="copy_file",
+                description="Copy a file or directory to a new location on the Synology NAS",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "base_url": {
+                            "type": "string",
+                            "description": "Synology NAS base URL (optional if configured in .env)"
+                        },
+                        "source_path": {
+                            "type": "string",
+                            "description": "Full path to the file/directory to copy (must start with /)"
+                        },
+                        "destination_path": {
+                            "type": "string",
+                            "description": "Destination directory path (must start with /)"
+                        },
+                        "overwrite": {
+                            "type": "boolean",
+                            "description": "Whether to overwrite existing files at destination (default: false)"
+                        }
+                    },
+                    "required": ["source_path", "destination_path"]
+                }
+            ),
+            types.Tool(
+                name="upload_binary",
+                description="Upload binary content (base64-encoded) to a file on the Synology NAS. Use for images, archives, and other non-text files.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "base_url": {
+                            "type": "string",
+                            "description": "Synology NAS base URL (optional if configured in .env)"
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "Full file path (must start with /)"
+                        },
+                        "content_b64": {
+                            "type": "string",
+                            "description": "Base64-encoded binary content"
+                        },
+                        "create_parents": {
+                            "type": "boolean",
+                            "description": "Create parent directories if they don't exist (default: true)"
+                        }
+                    },
+                    "required": ["path", "content_b64"]
                 }
             ),
             types.Tool(
@@ -2091,6 +2269,14 @@ class SynologyMCPServer:
                 return await self._handle_search_files(arguments)
             elif name == "get_file_content":
                 return await self._handle_get_file_content(arguments)
+            elif name == "write_file":
+                return await self._handle_write_file(arguments)
+            elif name == "append_file":
+                return await self._handle_append_file(arguments)
+            elif name == "copy_file":
+                return await self._handle_copy_file(arguments)
+            elif name == "upload_binary":
+                return await self._handle_upload_binary(arguments)
             elif name == "rename_file":
                 return await self._handle_rename_file(arguments)
             elif name == "move_file":
