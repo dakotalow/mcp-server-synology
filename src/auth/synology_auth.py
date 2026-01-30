@@ -14,11 +14,12 @@ DEFAULT_TIMEOUT = (5, 10)
 class SynologyAuth:
     """Handles Synology NAS authentication using simple API calls."""
 
-    def __init__(self, base_url: str, timeout: tuple = DEFAULT_TIMEOUT):
+    def __init__(self, base_url: str, timeout: tuple = DEFAULT_TIMEOUT, verify_ssl: bool = False):
         self.base_url = base_url.rstrip('/')
         self.current_session_id: Optional[str] = None
         self.current_session_type: str = 'FileStation'
         self.timeout = timeout
+        self.verify_ssl = verify_ssl
     
     def login(self, username: str, password: str) -> Dict[str, Any]:
         """Authenticate with Synology NAS and return session info."""
@@ -30,7 +31,8 @@ class SynologyAuth:
         
         # Try common API versions (start with newer versions)
         api_versions = ['7', '6', '3', '2']
-        
+        last_error = None
+
         for version in api_versions:
             payload = {
                 'api': 'SYNO.API.Auth',
@@ -43,7 +45,7 @@ class SynologyAuth:
             }
             
             try:
-                response = requests.get(login_url, params=payload, verify=False, timeout=self.timeout)
+                response = requests.get(login_url, params=payload, verify=self.verify_ssl, timeout=self.timeout)
                 response.raise_for_status()
                 result = response.json()
                 
@@ -57,11 +59,12 @@ class SynologyAuth:
                     # Don't try other versions for auth errors
                     if error_code in [400, 402, 403, 404]:
                         return result
-            except Exception:
+            except Exception as e:
+                last_error = str(e)
                 continue
-        
+
         # If all versions failed, return the last result
-        return {'success': False, 'error': {'code': 'unknown', 'message': 'Authentication failed'}}
+        return {'success': False, 'error': {'code': 'unknown', 'message': f'Authentication failed: {last_error or "all API versions failed"}'}}
     
     def login_download_station(self, username: str, password: str) -> Dict[str, Any]:
         """Authenticate specifically for Download Station."""
@@ -104,7 +107,7 @@ class SynologyAuth:
             }
             
             try:
-                response = requests.get(logout_url, params=payload, verify=False, timeout=self.timeout)
+                response = requests.get(logout_url, params=payload, verify=self.verify_ssl, timeout=self.timeout)
                 response.raise_for_status()
                 result = response.json()
 

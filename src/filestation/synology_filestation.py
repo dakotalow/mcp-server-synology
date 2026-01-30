@@ -16,10 +16,11 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 class SynologyFileStation:
     """Handles Synology FileStation API operations."""
     
-    def __init__(self, base_url: str, session_id: str):
+    def __init__(self, base_url: str, session_id: str, verify_ssl: bool = False):
         self.base_url = base_url.rstrip('/')
         self.session_id = session_id
         self.api_url = f"{self.base_url}/webapi/entry.cgi"
+        self.verify_ssl = verify_ssl
     
     def _make_request(self, api: str, version: str, method: str, use_post: bool = False, **params) -> Dict[str, Any]:
         """Make a request to Synology API."""
@@ -37,10 +38,10 @@ class SynologyFileStation:
                 self.api_url,
                 data=request_params,
                 headers={'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8'},
-                verify=False
+                verify=self.verify_ssl
             )
         else:
-            response = requests.get(self.api_url, params=request_params, verify=False)
+            response = requests.get(self.api_url, params=request_params, verify=self.verify_ssl)
         response.raise_for_status()
         
         data = response.json()
@@ -75,7 +76,7 @@ class SynologyFileStation:
             **params
         }
         
-        response = requests.post(self.api_url, params=request_params, files=files, verify=False)
+        response = requests.post(self.api_url, params=request_params, files=files, verify=self.verify_ssl)
         response.raise_for_status()
         
         data = response.json()
@@ -255,7 +256,7 @@ class SynologyFileStation:
                     'SYNO.FileStation.Search', '2', 'stop',
                     taskid=task_id
                 )
-            except:
+            except Exception:
                 pass  # Ignore cleanup errors
     
     def rename_file(self, path: str, new_name: str) -> Dict[str, Any]:
@@ -382,7 +383,7 @@ class SynologyFileStation:
             # Clean up temporary file
             try:
                 os.unlink(temp_file_path)
-            except:
+            except Exception:
                 pass  # Ignore cleanup errors
     
     def create_directory(self, folder_path: str, name: str, force_parent: bool = False) -> Dict[str, Any]:
@@ -462,7 +463,7 @@ class SynologyFileStation:
         try:
             file_info = self.get_file_info(formatted_path)
             recursive = file_info.get('type') == 'directory'
-        except:
+        except Exception:
             recursive = False  # Default to file behavior if can't determine
         
         item_name = os.path.basename(formatted_path)
@@ -523,7 +524,7 @@ class SynologyFileStation:
                     'SYNO.FileStation.Delete', '2', 'stop',
                     taskid=task_id
                 )
-            except:
+            except Exception:
                 pass  # Ignore cleanup errors
             raise e
     
@@ -541,7 +542,7 @@ class SynologyFileStation:
                 'path': formatted_path,
                 '_sid': self.session_id
             },
-            verify=False,
+            verify=self.verify_ssl,
             stream=True
         )
         response.raise_for_status()
@@ -638,6 +639,6 @@ class SynologyFileStation:
                     'SYNO.FileStation.CopyMove', '3', 'stop',
                     taskid=task_id
                 )
-            except:
+            except Exception:
                 pass  # Ignore cleanup errors
             raise e

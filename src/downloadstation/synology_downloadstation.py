@@ -3,16 +3,16 @@
 import requests
 import json
 from typing import Dict, List, Any, Optional
-import sys
 
 
 class SynologyDownloadStation:
     """Handles Synology Download Station API operations using DSM 7.0+ modern APIs."""
     
-    def __init__(self, base_url: str, session_id: str):
+    def __init__(self, base_url: str, session_id: str, verify_ssl: bool = False):
         self.base_url = base_url.rstrip('/')
         self.session_id = session_id
-        
+        self.verify_ssl = verify_ssl
+
         # DSM 7.0+ modern API endpoints (the only ones that work)
         self.api_url = f"{self.base_url}/webapi/entry.cgi"
         self.task_api = "SYNO.DownloadStation2.Task"
@@ -48,9 +48,9 @@ class SynologyDownloadStation:
         try:
             # Use POST for create operations, GET for others
             if method == 'create':
-                response = requests.post(endpoint_url, data=request_params, verify=False)
+                response = requests.post(endpoint_url, data=request_params, verify=self.verify_ssl)
             else:
-                response = requests.get(endpoint_url, params=request_params, verify=False)
+                response = requests.get(endpoint_url, params=request_params, verify=self.verify_ssl)
             
             response.raise_for_status()
             data = response.json()
@@ -129,12 +129,10 @@ class SynologyDownloadStation:
         except Exception as e:
             # If version 2 fails, try version 1
             if "doesn't exist" in str(e) or "102" in str(e) or "104" in str(e):
-                print(f"⚠️  {self.task_api} v{self.task_version} failed, trying v1", file=sys.stderr)
                 try:
                     basic_params = {'offset': offset, 'limit': params['limit']}
                     data = self._make_request(self.task_api, "1", 'list', **basic_params)
                 except Exception as e2:
-                    print(f"⚠️  No task APIs available: {e2}", file=sys.stderr)
                     return {'total': 0, 'offset': offset, 'tasks': []}
             else:
                 raise
@@ -211,8 +209,7 @@ class SynologyDownloadStation:
         if not destination:
             destination = self.get_default_destination()
         
-        # ✅ VALIDATE DESTINATION EXISTS BEFORE CREATING TASK
-        print(f"🔍 Validating destination folder exists: {destination}", file=sys.stderr)
+        # Validate destination exists before creating task
         if not self._check_destination_exists(destination):
             # Get suggestions for existing folders
             common_destinations = self.get_common_destinations()
@@ -229,8 +226,6 @@ class SynologyDownloadStation:
             
             raise Exception(error_msg)
         
-        print(f"✅ Destination '{destination}' exists, proceeding with task creation", file=sys.stderr)
-        
         # Use the exact format captured from real NAS operation
         params = {
             'type': 'url',
@@ -246,26 +241,15 @@ class SynologyDownloadStation:
             params['password'] = password
         
         try:
-            print(f"🔧 Creating task with real NAS format", file=sys.stderr)
-            print(f"   URI: {uri}", file=sys.stderr)
-            print(f"   Destination: {destination}", file=sys.stderr)
-            
             data = self._make_request(self.task_api, self.task_version, 'create', **params)
-            
-            print(f"✅ Task created successfully!", file=sys.stderr)
-            print(f"   Task IDs: {data.get('task_id', [])}", file=sys.stderr)
-            print(f"   List IDs: {data.get('list_id', [])}", file=sys.stderr)
-            
             return data
             
         except Exception as e:
             error_msg = str(e)
-            print(f"⚠️  Create task failed: {e}", file=sys.stderr)
-            
+
             # Fallback: Try with version 1 if version 2 failed
             if self.task_version != "1":
                 try:
-                    print("🔧 Trying with DownloadStation2.Task v1", file=sys.stderr)
                     fallback_params = {
                         'uri': uri,
                         'destination': destination
@@ -276,10 +260,9 @@ class SynologyDownloadStation:
                         fallback_params['password'] = password
                         
                     data = self._make_request(self.task_api, "1", 'create', **fallback_params)
-                    print("✅ Create successful with v1", file=sys.stderr)
                     return data
                 except Exception as e2:
-                    print(f"⚠️  v1 also failed: {e2}", file=sys.stderr)
+                    pass
             
             # Enhanced error message
             raise Exception(f"Task creation failed: {e}. Make sure the URL is valid and you have permission to create downloads.")
@@ -343,7 +326,7 @@ class SynologyDownloadStation:
                 '_sid': self.session_id
             }
             
-            response = requests.get(self.api_url, params=request_params, verify=False)
+            response = requests.get(self.api_url, params=request_params, verify=self.verify_ssl)
             response.raise_for_status()
             data = response.json()
             
@@ -388,11 +371,9 @@ class SynologyDownloadStation:
         # Try other common destinations
         for dest in self.get_common_destinations()[1:]:  # Skip first since it's preferred
             if self._check_destination_exists(dest):
-                print(f"⚠️  Preferred destination '{self.preferred_default_destination}' not found, using '{dest}'", file=sys.stderr)
                 return dest
-        
+
         # If nothing exists, return preferred anyway (will cause validation error later)
-        print(f"⚠️  No common destinations found, defaulting to '{self.preferred_default_destination}'", file=sys.stderr)
         return self.preferred_default_destination
     
     def set_default_destination(self, destination: str) -> bool:
@@ -408,9 +389,6 @@ class SynologyDownloadStation:
         
         if exists:
             self.preferred_default_destination = destination
-            print(f"✅ Default destination set to '{destination}'", file=sys.stderr)
-        else:
-            print(f"⚠️  Destination '{destination}' does not exist, not setting as default", file=sys.stderr)
         
         return exists
     
@@ -422,11 +400,8 @@ class SynologyDownloadStation:
         """
         if self._check_destination_exists('downloads'):
             self.preferred_default_destination = 'downloads'
-            print("✅ 'downloads' folder exists and is set as default", file=sys.stderr)
             return True
         else:
-            print("⚠️  'downloads' folder does not exist. Please create it in File Station.", file=sys.stderr)
-            print("   Typical path: Control Panel > Shared Folder > Create > Name: 'downloads'", file=sys.stderr)
             return False
 
     def list_downloaded_files(self, destination: Optional[str] = None) -> Dict[str, Any]:
@@ -434,9 +409,8 @@ class SynologyDownloadStation:
         if not destination:
             destination = self.get_default_destination()
         
-        
-        print(f"🔍 Listing downloaded files in: {destination}", file=sys.stderr)
-        
+
+
         try:
             
             request_params = {
@@ -447,7 +421,7 @@ class SynologyDownloadStation:
                 '_sid': self.session_id
             }
             
-            response = requests.get(self.api_url, params=request_params, verify=False)
+            response = requests.get(self.api_url, params=request_params, verify=self.verify_ssl)
             response.raise_for_status()
             data = response.json()
             

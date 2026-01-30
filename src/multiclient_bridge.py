@@ -333,8 +333,8 @@ class MCPBridge:
                 if websocket and not websocket.closed:
                     try:
                         await websocket.close()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Error closing websocket: {e}")
             
             # Check if we should continue trying to reconnect
             if self.shutdown_event.is_set():
@@ -410,8 +410,8 @@ class MCPBridge:
                     )
                 except asyncio.TimeoutError:
                     logger.warning("⚠️ Task cancellation timeout")
-                except Exception:
-                    pass  # Ignore cancellation errors
+                except Exception as e:
+                    logger.debug(f"Error during task cancellation: {e}")
         
         await self.stop()
         return True
@@ -430,8 +430,8 @@ class MCPBridge:
         for ws in list(self.websocket_clients):
             try:
                 close_tasks.append(asyncio.create_task(ws.close()))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Error scheduling websocket close: {e}")
         
         if close_tasks:
             try:

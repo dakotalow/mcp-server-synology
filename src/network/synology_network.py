@@ -10,10 +10,11 @@ import sys
 class SynologyNetwork:
     """Handles Synology Network Services API operations."""
 
-    def __init__(self, base_url: str, session_id: str):
+    def __init__(self, base_url: str, session_id: str, verify_ssl: bool = False):
         self.base_url = base_url.rstrip('/')
         self.session_id = session_id
         self.api_url = f"{self.base_url}/webapi/entry.cgi"
+        self.verify_ssl = verify_ssl
 
         # API definitions
         # DNS Server
@@ -45,9 +46,9 @@ class SynologyNetwork:
 
         try:
             if use_post:
-                response = requests.post(self.api_url, data=request_params, verify=False)
+                response = requests.post(self.api_url, data=request_params, verify=self.verify_ssl)
             else:
-                response = requests.get(self.api_url, params=request_params, verify=False)
+                response = requests.get(self.api_url, params=request_params, verify=self.verify_ssl)
 
             response.raise_for_status()
             data = response.json()

@@ -53,10 +53,10 @@ class SynologyMCPServer:
         
         if base_url not in self.filestation_instances:
             session_id = self.sessions[base_url]
-            self.filestation_instances[base_url] = SynologyFileStation(base_url, session_id)
-        
+            self.filestation_instances[base_url] = SynologyFileStation(base_url, session_id, verify_ssl=config.verify_ssl)
+
         return self.filestation_instances[base_url]
-    
+
     def _get_downloadstation(self, base_url: str) -> SynologyDownloadStation:
         """Get or create DownloadStation instance for a base URL."""
         if base_url not in self.sessions:
@@ -64,7 +64,7 @@ class SynologyMCPServer:
 
         if base_url not in self.downloadstation_instances:
             session_id = self.sessions[base_url]
-            self.downloadstation_instances[base_url] = SynologyDownloadStation(base_url, session_id)
+            self.downloadstation_instances[base_url] = SynologyDownloadStation(base_url, session_id, verify_ssl=config.verify_ssl)
 
         return self.downloadstation_instances[base_url]
 
@@ -75,7 +75,7 @@ class SynologyMCPServer:
 
         if base_url not in self.docker_instances:
             session_id = self.sessions[base_url]
-            self.docker_instances[base_url] = SynologyDocker(base_url, session_id)
+            self.docker_instances[base_url] = SynologyDocker(base_url, session_id, verify_ssl=config.verify_ssl)
 
         return self.docker_instances[base_url]
 
@@ -86,7 +86,7 @@ class SynologyMCPServer:
 
         if base_url not in self.surveillance_instances:
             session_id = self.sessions[base_url]
-            self.surveillance_instances[base_url] = SynologySurveillance(base_url, session_id)
+            self.surveillance_instances[base_url] = SynologySurveillance(base_url, session_id, verify_ssl=config.verify_ssl)
 
         return self.surveillance_instances[base_url]
 
@@ -97,7 +97,7 @@ class SynologyMCPServer:
 
         if base_url not in self.hyperbackup_instances:
             session_id = self.sessions[base_url]
-            self.hyperbackup_instances[base_url] = SynologyHyperBackup(base_url, session_id)
+            self.hyperbackup_instances[base_url] = SynologyHyperBackup(base_url, session_id, verify_ssl=config.verify_ssl)
 
         return self.hyperbackup_instances[base_url]
 
@@ -108,7 +108,7 @@ class SynologyMCPServer:
 
         if base_url not in self.vmm_instances:
             session_id = self.sessions[base_url]
-            self.vmm_instances[base_url] = SynologyVMM(base_url, session_id)
+            self.vmm_instances[base_url] = SynologyVMM(base_url, session_id, verify_ssl=config.verify_ssl)
 
         return self.vmm_instances[base_url]
 
@@ -119,7 +119,7 @@ class SynologyMCPServer:
 
         if base_url not in self.drive_instances:
             session_id = self.sessions[base_url]
-            self.drive_instances[base_url] = SynologyDrive(base_url, session_id)
+            self.drive_instances[base_url] = SynologyDrive(base_url, session_id, verify_ssl=config.verify_ssl)
 
         return self.drive_instances[base_url]
 
@@ -130,7 +130,7 @@ class SynologyMCPServer:
 
         if base_url not in self.system_instances:
             session_id = self.sessions[base_url]
-            self.system_instances[base_url] = SynologySystem(base_url, session_id)
+            self.system_instances[base_url] = SynologySystem(base_url, session_id, verify_ssl=config.verify_ssl)
 
         return self.system_instances[base_url]
 
@@ -141,17 +141,12 @@ class SynologyMCPServer:
 
         if base_url not in self.network_instances:
             session_id = self.sessions[base_url]
-            self.network_instances[base_url] = SynologyNetwork(base_url, session_id)
+            self.network_instances[base_url] = SynologyNetwork(base_url, session_id, verify_ssl=config.verify_ssl)
 
         return self.network_instances[base_url]
     
     async def _auto_login_if_configured(self):
         """Automatically login if credentials are configured and auto_login is enabled."""
-        # Debug output to see what config values we have
-        print(f"🔍 DEBUG: config.auto_login = {config.auto_login}", file=sys.stderr)
-        print(f"🔍 DEBUG: config.has_synology_credentials() = {config.has_synology_credentials()}", file=sys.stderr)
-        print(f"🔍 DEBUG: config = {config}", file=sys.stderr)
-        
         if config.auto_login and config.has_synology_credentials():
             try:
                 synology_config = config.get_synology_config()
@@ -161,7 +156,7 @@ class SynologyMCPServer:
                 
                 # Create auth instance
                 if base_url not in self.auth_instances:
-                    self.auth_instances[base_url] = SynologyAuth(base_url)
+                    self.auth_instances[base_url] = SynologyAuth(base_url, verify_ssl=config.verify_ssl)
                 
                 auth = self.auth_instances[base_url]
                 result = auth.login(synology_config['username'], synology_config['password'])
@@ -258,7 +253,6 @@ class SynologyMCPServer:
         async def handle_call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             """Handle tool calls."""
             try:
-                print(f"🛠️ Executing tool: {name}", file=sys.stderr)
                 if name == "synology_login":
                     return await self._handle_login(arguments)
                 elif name == "synology_logout":
@@ -477,7 +471,7 @@ class SynologyMCPServer:
         
         # Create or get auth instance
         if base_url not in self.auth_instances:
-            self.auth_instances[base_url] = SynologyAuth(base_url)
+            self.auth_instances[base_url] = SynologyAuth(base_url, verify_ssl=config.verify_ssl)
         
         auth = self.auth_instances[base_url]
         
@@ -2155,6 +2149,124 @@ class SynologyMCPServer:
                 return await self._handle_docker_stop_project(arguments)
             elif name == "docker_list_networks":
                 return await self._handle_docker_list_networks(arguments)
+            # Surveillance Station handlers
+            elif name == "surveillance_list_cameras":
+                return await self._handle_surveillance_list_cameras(arguments)
+            elif name == "surveillance_get_camera":
+                return await self._handle_surveillance_get_camera(arguments)
+            elif name == "surveillance_enable_camera":
+                return await self._handle_surveillance_enable_camera(arguments)
+            elif name == "surveillance_disable_camera":
+                return await self._handle_surveillance_disable_camera(arguments)
+            elif name == "surveillance_list_recordings":
+                return await self._handle_surveillance_list_recordings(arguments)
+            elif name == "surveillance_take_snapshot":
+                return await self._handle_surveillance_take_snapshot(arguments)
+            elif name == "surveillance_get_home_mode":
+                return await self._handle_surveillance_get_home_mode(arguments)
+            elif name == "surveillance_set_home_mode":
+                return await self._handle_surveillance_set_home_mode(arguments)
+            # Hyper Backup handlers
+            elif name == "backup_list_tasks":
+                return await self._handle_backup_list_tasks(arguments)
+            elif name == "backup_get_task":
+                return await self._handle_backup_get_task(arguments)
+            elif name == "backup_start":
+                return await self._handle_backup_start(arguments)
+            elif name == "backup_cancel":
+                return await self._handle_backup_cancel(arguments)
+            elif name == "backup_list_versions":
+                return await self._handle_backup_list_versions(arguments)
+            elif name == "backup_get_stats":
+                return await self._handle_backup_get_stats(arguments)
+            # VMM handlers
+            elif name == "vmm_list_guests":
+                return await self._handle_vmm_list_guests(arguments)
+            elif name == "vmm_get_guest":
+                return await self._handle_vmm_get_guest(arguments)
+            elif name == "vmm_start_guest":
+                return await self._handle_vmm_start_guest(arguments)
+            elif name == "vmm_stop_guest":
+                return await self._handle_vmm_stop_guest(arguments)
+            elif name == "vmm_restart_guest":
+                return await self._handle_vmm_restart_guest(arguments)
+            elif name == "vmm_list_snapshots":
+                return await self._handle_vmm_list_snapshots(arguments)
+            elif name == "vmm_create_snapshot":
+                return await self._handle_vmm_create_snapshot(arguments)
+            elif name == "vmm_restore_snapshot":
+                return await self._handle_vmm_restore_snapshot(arguments)
+            # Drive handlers
+            elif name == "drive_list_connections":
+                return await self._handle_drive_list_connections(arguments)
+            elif name == "drive_list_team_folders":
+                return await self._handle_drive_list_team_folders(arguments)
+            elif name == "drive_list_share_links":
+                return await self._handle_drive_list_share_links(arguments)
+            elif name == "drive_create_share_link":
+                return await self._handle_drive_create_share_link(arguments)
+            elif name == "drive_get_sync_status":
+                return await self._handle_drive_get_sync_status(arguments)
+            elif name == "drive_list_file_versions":
+                return await self._handle_drive_list_file_versions(arguments)
+            # System handlers
+            elif name == "system_get_info":
+                return await self._handle_system_get_info(arguments)
+            elif name == "system_get_utilization":
+                return await self._handle_system_get_utilization(arguments)
+            elif name == "storage_list_volumes":
+                return await self._handle_storage_list_volumes(arguments)
+            elif name == "storage_list_disks":
+                return await self._handle_storage_list_disks(arguments)
+            elif name == "logs_get":
+                return await self._handle_logs_get(arguments)
+            elif name == "logs_clear":
+                return await self._handle_logs_clear(arguments)
+            elif name == "package_list":
+                return await self._handle_package_list(arguments)
+            elif name == "package_start":
+                return await self._handle_package_start(arguments)
+            elif name == "package_stop":
+                return await self._handle_package_stop(arguments)
+            elif name == "users_list":
+                return await self._handle_users_list(arguments)
+            elif name == "users_get":
+                return await self._handle_users_get(arguments)
+            elif name == "groups_list":
+                return await self._handle_groups_list(arguments)
+            elif name == "system_reboot":
+                return await self._handle_system_reboot(arguments)
+            elif name == "system_shutdown":
+                return await self._handle_system_shutdown(arguments)
+            # Network handlers
+            elif name == "dns_list_zones":
+                return await self._handle_dns_list_zones(arguments)
+            elif name == "dns_list_records":
+                return await self._handle_dns_list_records(arguments)
+            elif name == "dns_create_record":
+                return await self._handle_dns_create_record(arguments)
+            elif name == "dns_delete_record":
+                return await self._handle_dns_delete_record(arguments)
+            elif name == "dhcp_get_status":
+                return await self._handle_dhcp_get_status(arguments)
+            elif name == "dhcp_list_leases":
+                return await self._handle_dhcp_list_leases(arguments)
+            elif name == "dhcp_list_reservations":
+                return await self._handle_dhcp_list_reservations(arguments)
+            elif name == "dhcp_create_reservation":
+                return await self._handle_dhcp_create_reservation(arguments)
+            elif name == "dhcp_delete_reservation":
+                return await self._handle_dhcp_delete_reservation(arguments)
+            elif name == "vpn_get_status":
+                return await self._handle_vpn_get_status(arguments)
+            elif name == "vpn_list_connections":
+                return await self._handle_vpn_list_connections(arguments)
+            elif name == "vpn_disconnect_client":
+                return await self._handle_vpn_disconnect_client(arguments)
+            elif name == "vpn_list_users":
+                return await self._handle_vpn_list_users(arguments)
+            elif name == "network_get_info":
+                return await self._handle_network_get_info(arguments)
             else:
                 raise ValueError(f"Unknown tool: {name}")
         except Exception as e:
