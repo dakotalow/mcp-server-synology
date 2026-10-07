@@ -164,12 +164,17 @@ class SynologyMCPServer:
                     self.auth_instances[base_url] = SynologyAuth(base_url)
                 
                 auth = self.auth_instances[base_url]
-                result = auth.login(synology_config['username'], synology_config['password'])
+                result = auth.login(synology_config['username'], synology_config['password'],
+                                    otp_code=synology_config['otp_code'],
+                                    device_id=synology_config['device_id'])
                 
                 if result.get("success"):
                     session_id = result["data"]["sid"]
                     self.sessions[base_url] = session_id
                     print(f"✅ Auto-login successful for {base_url} (Session: {session_id[:8]}...)", file=sys.stderr)
+                    if auth.current_device_id and auth.current_device_id != synology_config['device_id']:
+                        if config.save_device_id(auth.current_device_id):
+                            print("🔑 Saved refreshed 2FA trusted-device token to .env", file=sys.stderr)
                     
                     # Clear any existing instances to force recreation with new session
                     if base_url in self.filestation_instances:
@@ -481,8 +486,13 @@ class SynologyMCPServer:
         
         auth = self.auth_instances[base_url]
         
-        # Perform login
-        result = auth.login(username, password)
+        # Perform login. Reuse the saved 2FA trusted-device token for the
+        # configured NAS and account; without it a 2FA account gets a 403.
+        device_id = None
+        if base_url.rstrip('/') == (config.synology_url or '').rstrip('/') \
+                and username == config.synology_username:
+            device_id = config.synology_device_id
+        result = auth.login(username, password, device_id=device_id)
         
         # Store session if successful
         if result.get("success"):
@@ -499,9 +509,10 @@ class SynologyMCPServer:
 
             return [types.TextContent(
                 type="text",
+                # The session id and any 2FA device token stay out of the
+                # transcript: either one is a live credential for the NAS.
                 text=f"Successfully authenticated with {base_url}\n"
-                     f"Session ID: {session_id}\n"
-                     f"Response: {json.dumps(result, indent=2)}"
+                     f"Session ID: {session_id[:8]}..."
             )]
         else:
             return [types.TextContent(

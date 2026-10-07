@@ -11,6 +11,20 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 DEFAULT_TIMEOUT = (5, 10)
 
 
+def _refused_redirect(response) -> Dict[str, Any]:
+    """Failure returned when auth.cgi answers with a 3xx (not followed)."""
+    location = response.headers.get('Location', '<no Location header>')
+    return {
+        'success': False,
+        'error': {
+            'code': 'unexpected_redirect',
+            'message': (f"auth.cgi returned HTTP {response.status_code} redirecting to "
+                        f"{location}; refused so no credentials were sent there. "
+                        "Set SYNOLOGY_URL to the final https:// address."),
+        },
+    }
+
+
 class SynologyAuth:
     """Handles Synology NAS authentication using simple API calls."""
 
@@ -18,19 +32,39 @@ class SynologyAuth:
         self.base_url = base_url.rstrip('/')
         self.current_session_id: Optional[str] = None
         self.current_session_type: str = 'FileStation'
+        # Trusted-device token from the last 2FA login, for the caller to persist.
+        self.current_device_id: Optional[str] = None
         self.timeout = timeout
     
-    def login(self, username: str, password: str) -> Dict[str, Any]:
-        """Authenticate with Synology NAS and return session info."""
-        return self.login_with_session(username, password, 'FileStation')
-    
-    def login_with_session(self, username: str, password: str, session_type: str = 'FileStation') -> Dict[str, Any]:
+    def login(self, username: str, password: str,
+              otp_code: Optional[str] = None,
+              device_id: Optional[str] = None) -> Dict[str, Any]:
+        """Authenticate with Synology NAS and return session info.
+
+        For accounts with 2-step verification:
+            - device_id: a trusted-device token (`did`) DSM issued on an earlier
+              OTP login. DSM skips the OTP step when it is presented.
+            - otp_code: a one-time 6-digit code, needed only for the first login
+              (when no device_id exists yet). DSM is asked to issue a device
+              token, which is left in `current_device_id` for the caller to save.
+        """
+        return self.login_with_session(username, password, 'FileStation',
+                                       otp_code=otp_code, device_id=device_id)
+
+    def login_with_session(self, username: str, password: str, session_type: str = 'FileStation',
+                           otp_code: Optional[str] = None,
+                           device_id: Optional[str] = None) -> Dict[str, Any]:
         """Authenticate with Synology NAS using specific session type."""
         login_url = f"{self.base_url}/webapi/auth.cgi"
-        
+
         # Try common API versions (start with newer versions)
         api_versions = ['7', '6', '3', '2']
-        
+        # First-time 2FA login: v7 can succeed without returning a device token
+        # (seen on DSM 7.3.2), which leaves every later start asking for an OTP.
+        # v6 returns it. Ported from upstream atom2ueki/mcp-server-synology 1.8.0.
+        if otp_code and not device_id:
+            api_versions = ['6', '7', '3', '2']
+
         for version in api_versions:
             payload = {
                 'api': 'SYNO.API.Auth',
@@ -41,32 +75,51 @@ class SynologyAuth:
                 'session': session_type,
                 'format': 'sid'
             }
-            
+            if device_id:
+                payload['device_id'] = device_id
+            elif otp_code:
+                payload['otp_code'] = otp_code
+                payload['enable_device_token'] = 'yes'
+
             try:
-                response = requests.get(login_url, params=payload, verify=False, timeout=self.timeout)
+                # POST, not GET: a password or OTP in the query string lands in
+                # DSM's access log. Redirects are refused because requests would
+                # replay this body, credentials included, to the redirect target.
+                response = requests.post(login_url, data=payload, verify=False,
+                                         timeout=self.timeout, allow_redirects=False)
+                if 300 <= response.status_code < 400:
+                    return _refused_redirect(response)
                 response.raise_for_status()
                 result = response.json()
-                
+
                 if result.get('success'):
                     # Store session info for automatic logout
                     self.current_session_id = result['data']['sid']
                     self.current_session_type = session_type
+                    # DSM returns `did` only on the OTP path; on the trusted-device
+                    # path it may issue a fresh one or echo nothing.
+                    did = result['data'].get('did') or device_id
+                    if did:
+                        self.current_device_id = did
                     return result
                 else:
                     error_code = result.get('error', {}).get('code', 'unknown')
                     # Don't try other versions for auth errors
-                    if error_code in [400, 402, 403, 404]:
+                    if error_code in [400, 401, 402, 403, 404]:
                         return result
             except Exception:
                 continue
-        
+
         # If all versions failed, return the last result
         return {'success': False, 'error': {'code': 'unknown', 'message': 'Authentication failed'}}
-    
-    def login_download_station(self, username: str, password: str) -> Dict[str, Any]:
+
+    def login_download_station(self, username: str, password: str,
+                               otp_code: Optional[str] = None,
+                               device_id: Optional[str] = None) -> Dict[str, Any]:
         """Authenticate specifically for Download Station."""
-        return self.login_with_session(username, password, 'DownloadStation')
-    
+        return self.login_with_session(username, password, 'DownloadStation',
+                                       otp_code=otp_code, device_id=device_id)
+
     def logout(self, session_id: Optional[str] = None, session_type: Optional[str] = None) -> Dict[str, Any]:
         """
         Logout from Synology NAS.
@@ -104,7 +157,10 @@ class SynologyAuth:
             }
             
             try:
-                response = requests.get(logout_url, params=payload, verify=False, timeout=self.timeout)
+                response = requests.post(logout_url, data=payload, verify=False,
+                                         timeout=self.timeout, allow_redirects=False)
+                if 300 <= response.status_code < 400:
+                    return _refused_redirect(response)
                 response.raise_for_status()
                 result = response.json()
 
